@@ -1,0 +1,5 @@
+google-cloud-storage
+google-cloud-bigquery
+functions-framework
+sendgrid
+python_http_client
