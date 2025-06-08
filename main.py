@@ -1,12 +1,13 @@
 import functions_framework
 import csv
 import os
+from datetime import datetime
 from google.cloud import storage
 from google.cloud import bigquery
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail
 
-# メール送信用関数（宛先を引数で受け取るよう変更）
+# メール送信用関数
 def send_email(to_email, subject, content):
     message = Mail(
         from_email=os.environ.get("FROM_EMAIL"),
@@ -21,7 +22,7 @@ def send_email(to_email, subject, content):
     except Exception as e:
         print(f"SendGrid error for {to_email}: {e}")
 
-# Cloud Function 本体
+# Cloud Function エントリーポイント
 @functions_framework.cloud_event
 def process_csv(cloud_event):
     data = cloud_event.data
@@ -44,11 +45,14 @@ def process_csv(cloud_event):
     table_id = "csv_test"
     table_ref = bq_client.dataset(dataset_id).table(table_id)
 
+    # 現在のタイムスタンプ
+    current_time = datetime.utcnow().isoformat()
+
     # CSV 読み込みとデータ整形
     rows_to_insert = []
     recipients = []
 
-    with open(temp_file_path, mode='r', encoding='utf-8') as file:
+    with open(temp_file_path, mode='r', encoding='utf-8', errors='replace') as file:
         reader = csv.DictReader(file)
         for row in reader:
             # 空のフィールドがある行をスキップ
@@ -56,9 +60,11 @@ def process_csv(cloud_event):
                 print(f"⚠️ 空の値が含まれている行をスキップ: {row}")
                 continue
 
+            # create_at を現在の時刻で追加（CSVの値があっても上書き）
+            row["create_at"] = current_time
             rows_to_insert.append(row)
 
-            # send_flg 判定（空または '1' の場合に送信）
+            # メール送信対象の抽出
             send_flg = row.get("send_flg", "").strip()
             email = row.get("email", "").strip()
             if email and (send_flg == "1" or send_flg == ""):
@@ -71,7 +77,7 @@ def process_csv(cloud_event):
     else:
         print(f"✅ BigQueryに {len(rows_to_insert)} 件を書き込み完了。")
 
-        # 該当するメールアドレスへ送信
+        # メール送信
         for email in recipients:
             send_email(
                 to_email=email,
