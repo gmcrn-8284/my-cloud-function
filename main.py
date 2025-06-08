@@ -1,13 +1,13 @@
 import functions_framework
 import csv
 import os
-from datetime import datetime
 from google.cloud import storage
 from google.cloud import bigquery
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail
+from datetime import datetime, timezone
 
-# メール送信用関数
+# メール送信用関数（宛先と本文を引数で受け取るよう修正）
 def send_email(to_email, subject, content):
     message = Mail(
         from_email=os.environ.get("FROM_EMAIL"),
@@ -22,7 +22,7 @@ def send_email(to_email, subject, content):
     except Exception as e:
         print(f"SendGrid error for {to_email}: {e}")
 
-# Cloud Function エントリーポイント
+# Cloud Function 本体
 @functions_framework.cloud_event
 def process_csv(cloud_event):
     data = cloud_event.data
@@ -45,14 +45,11 @@ def process_csv(cloud_event):
     table_id = "csv_test"
     table_ref = bq_client.dataset(dataset_id).table(table_id)
 
-    # 現在のタイムスタンプ
-    current_time = datetime.utcnow().isoformat()
-
     # CSV 読み込みとデータ整形
     rows_to_insert = []
-    recipients = []
+    email_content_map = {}
 
-    with open(temp_file_path, mode='r', encoding='utf-8', errors='replace') as file:
+    with open(temp_file_path, mode='r', encoding='utf-8') as file:
         reader = csv.DictReader(file)
         for row in reader:
             # 空のフィールドがある行をスキップ
@@ -60,15 +57,17 @@ def process_csv(cloud_event):
                 print(f"⚠️ 空の値が含まれている行をスキップ: {row}")
                 continue
 
-            # create_at を現在の時刻で追加（CSVの値があっても上書き）
-            row["create_at"] = current_time
+            # create_at を現在時刻で追加（UTC）
+            row["create_at"] = datetime.now(timezone.utc).isoformat()
+
             rows_to_insert.append(row)
 
-            # メール送信対象の抽出
+            # 送信条件とメール本文を格納
             send_flg = row.get("send_flg", "").strip()
             email = row.get("email", "").strip()
-            if email and (send_flg == "1" or send_flg == ""):
-                recipients.append(email)
+            content = row.get("content", "").strip()
+            if email and (send_flg == "1" or send_flg == "") and content:
+                email_content_map[email] = content
 
     # BigQuery に保存
     errors = bq_client.insert_rows_json(table_ref, rows_to_insert)
@@ -77,10 +76,10 @@ def process_csv(cloud_event):
     else:
         print(f"✅ BigQueryに {len(rows_to_insert)} 件を書き込み完了。")
 
-        # メール送信
-        for email in recipients:
+        # メール送信（個別コンテンツ付き）
+        for email, content in email_content_map.items():
             send_email(
                 to_email=email,
                 subject="CSVアップロード完了通知",
-                content=f"{file_name} に含まれるデータを BigQuery に保存しました。"
+                content=content
             )
